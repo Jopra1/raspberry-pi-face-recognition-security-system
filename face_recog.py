@@ -58,7 +58,7 @@ while True:
 
     for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
         matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
-        name = "Unknown"
+        name = "Unknown" 
 
         # Pick the best match
         face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
