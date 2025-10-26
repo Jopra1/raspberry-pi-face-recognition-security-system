@@ -106,37 +106,9 @@ def start_camera():
 def video_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-# ----------------------------
-# Upload endpoint for single image
-# ----------------------------
-@app.post("/upload-image")
-async def upload_image(name: str = Form(...), file: UploadFile = File(...)):
-    """
-    Upload a single image from user's system.
-    Saves it in /dataset/<name>/ and updates encodings list immediately.
-    """
-    os.makedirs(root_dataset_path, exist_ok=True)
-    person_folder = os.path.join(root_dataset_path, name)
-    os.makedirs(person_folder, exist_ok=True)
 
-    # Optional: avoid overwriting using timestamp
-    file_path = os.path.join(person_folder, f"{int(time.time())}_{file.filename}")
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
 
-    # Load face encoding immediately
-    image = face_recognition.load_image_file(file_path)
-    encodings = face_recognition.face_encodings(image)
-    if len(encodings) > 0:
-        known_encodings.append(encodings[0])
-        known_names.append(name)
-        return {"status": "success", "message": f"Image uploaded and face encoding added for {name}"}
-    else:
-        return {"status": "warning", "message": f"Image uploaded, but no face detected for {name}"}
-
-# ----------------------------
 # Upload endpoint for multiple images
-# ----------------------------
 @app.post("/upload-images")
 async def upload_images(name: str = Form(...), files: List[UploadFile] = File(...)):
     """
