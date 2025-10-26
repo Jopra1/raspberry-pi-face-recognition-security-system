@@ -1,10 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import cv2
 import face_recognition
 import os
 import numpy as np
+import shutil
+import time
+from typing import List
 
 app = FastAPI()
 
@@ -17,26 +20,38 @@ app.add_middleware(
 )
 
 # ----------------------------
-# Load known faces
+# Global known faces storage
 # ----------------------------
 known_encodings = []
 known_names = []
 root_dataset_path = "dataset"
 
-for person_name in os.listdir(root_dataset_path):
-    person_folder_path = os.path.join(root_dataset_path, person_name)
-    if os.path.isdir(person_folder_path):
-        for file in os.listdir(person_folder_path):
-            if file.lower().endswith(('.jpg', '.png', '.jpeg')):
-                image_path = os.path.join(person_folder_path, file)
-                image = face_recognition.load_image_file(image_path)
-                encodings = face_recognition.face_encodings(image)
-                if len(encodings) > 0:
-                    known_encodings.append(encodings[0])
-                    known_names.append(person_name)
+def load_known_faces():
+    """Load all known faces from dataset folder."""
+    global known_encodings, known_names
+    known_encodings = []
+    known_names = []
+
+    if not os.path.exists(root_dataset_path):
+        os.makedirs(root_dataset_path)
+
+    for person_name in os.listdir(root_dataset_path):
+        person_folder_path = os.path.join(root_dataset_path, person_name)
+        if os.path.isdir(person_folder_path):
+            for file in os.listdir(person_folder_path):
+                if file.lower().endswith(('.jpg', '.png', '.jpeg')):
+                    image_path = os.path.join(person_folder_path, file)
+                    image = face_recognition.load_image_file(image_path)
+                    encodings = face_recognition.face_encodings(image)
+                    if len(encodings) > 0:
+                        known_encodings.append(encodings[0])
+                        known_names.append(person_name)
+
+# Initial load of existing faces
+load_known_faces()
 
 # ----------------------------
-# Initialize webcam
+# Webcam setup
 # ----------------------------
 video_capture = cv2.VideoCapture(0)
 process_this_frame = True
@@ -85,9 +100,60 @@ def gen_frames():
 
 @app.get("/start-camera")
 def start_camera():
-    # Now this is just a dummy trigger, streaming happens at /video_feed
     return {"status": "Camera Running"}
 
 @app.get("/video_feed")
 def video_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+# ----------------------------
+# Upload endpoint for single image
+# ----------------------------
+@app.post("/upload-image")
+async def upload_image(name: str = Form(...), file: UploadFile = File(...)):
+    """
+    Upload a single image from user's system.
+    Saves it in /dataset/<name>/ and updates encodings list immediately.
+    """
+    os.makedirs(root_dataset_path, exist_ok=True)
+    person_folder = os.path.join(root_dataset_path, name)
+    os.makedirs(person_folder, exist_ok=True)
+
+    # Optional: avoid overwriting using timestamp
+    file_path = os.path.join(person_folder, f"{int(time.time())}_{file.filename}")
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    # Load face encoding immediately
+    image = face_recognition.load_image_file(file_path)
+    encodings = face_recognition.face_encodings(image)
+    if len(encodings) > 0:
+        known_encodings.append(encodings[0])
+        known_names.append(name)
+        return {"status": "success", "message": f"Image uploaded and face encoding added for {name}"}
+    else:
+        return {"status": "warning", "message": f"Image uploaded, but no face detected for {name}"}
+
+# ----------------------------
+# Upload endpoint for multiple images
+# ----------------------------
+@app.post("/upload-images")
+async def upload_images(name: str = Form(...), files: List[UploadFile] = File(...)):
+    """
+    Upload multiple images for a person.
+    Saves them in /dataset/<name>/ and updates encodings list immediately.
+    """
+    os.makedirs(root_dataset_path, exist_ok=True)
+    person_folder = os.path.join(root_dataset_path, name)
+    os.makedirs(person_folder, exist_ok=True)
+
+    saved_files = []
+    for file in files:
+        file_path = os.path.join(person_folder, f"{int(time.time())}_{file.filename}")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        saved_files.append(file_path)
+
+       
+
+    return {"status": "success", "message": f"{len(saved_files)} files uploaded and face encodings updated.", "files": saved_files}
