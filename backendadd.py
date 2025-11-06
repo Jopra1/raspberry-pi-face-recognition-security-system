@@ -1,14 +1,16 @@
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
 import uvicorn
 import face_recognition
 import cv2
 import os
 import numpy as np
 import pickle
+import shutil
 from gpiozero import AngularServo
 from time import sleep, time
+from typing import List
 
 app = FastAPI()
 
@@ -21,11 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====== Load or Create Known Encodings ======
+# ====== Dataset & Encodings ======
 encodings_file = "encodings.pkl"
+root_dataset_path = "dataset"
 known_encodings = []
 known_names = []
 
+# Load existing encodings if present
 if os.path.exists(encodings_file):
     print("Loading existing encodings...")
     with open(encodings_file, "rb") as f:
@@ -33,24 +37,23 @@ if os.path.exists(encodings_file):
         known_encodings = data["encodings"]
         known_names = data["names"]
 else:
-    print("No encodings file found — creating new encodings...")
-    root_dataset_path = "dataset"
+    # Create new encodings if file doesn't exist
+    if not os.path.exists(root_dataset_path):
+        os.makedirs(root_dataset_path)
     for person_name in os.listdir(root_dataset_path):
-        person_folder_path = os.path.join(root_dataset_path, person_name)
-        if os.path.isdir(person_folder_path):
-            for file in os.listdir(person_folder_path):
-                if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    image_path = os.path.join(person_folder_path, file)
+        person_folder = os.path.join(root_dataset_path, person_name)
+        if os.path.isdir(person_folder):
+            for file in os.listdir(person_folder):
+                if file.lower().endswith((".jpg", ".jpeg", ".png")):
+                    image_path = os.path.join(person_folder, file)
                     image = face_recognition.load_image_file(image_path)
                     encodings = face_recognition.face_encodings(image)
                     if len(encodings) > 0:
                         known_encodings.append(encodings[0])
                         known_names.append(person_name)
-                        print(f"Encoded {person_name}: {file}")
-    # Save for future runs
     with open(encodings_file, "wb") as f:
         pickle.dump({"encodings": known_encodings, "names": known_names}, f)
-    print("Encodings created and saved to encodings.pkl")
+    print("Encodings saved to encodings.pkl")
 
 # ====== Servo Setup ======
 servo = AngularServo(18, min_angle=0, max_angle=180,
@@ -78,19 +81,16 @@ def start_camera():
 # ====== Frame Generator ======
 def generate_frames():
     global servo_open, last_seen_time, last_face_locations, last_face_names
-
     frame_count = 0
-    detection_interval = 5  # detect every 5 frames
+    detection_interval = 5
 
     while True:
         if video_capture is None:
             break
-
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        # Run detection only every few frames
         if frame_count % detection_interval == 0:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             face_locations = face_recognition.face_locations(rgb_frame, model="hog")
@@ -115,13 +115,11 @@ def generate_frames():
             last_face_locations = face_locations
             last_face_names = face_names
 
-        # Draw boxes & names
         for (top, right, bottom, left), name in zip(last_face_locations, last_face_names):
             cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
             cv2.putText(frame, name, (left, top - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # Close door if no face for 5 seconds
         if servo_open and time() - last_seen_time > 5:
             servo.angle = 0
             servo_open = False
@@ -138,6 +136,30 @@ def video_feed():
     if video_capture is None:
         return JSONResponse(status_code=400, content={"message": "Camera not started"})
     return StreamingResponse(generate_frames(), media_type='multipart/x-mixed-replace; boundary=frame')
+
+# ====== Upload Images Endpoint ======
+@app.post("/upload-images")
+async def upload_images(name: str = Form(...), files: List[UploadFile] = File(...)):
+    """
+    Upload multiple images for a person and save them under /dataset/<name>/.
+    """
+    os.makedirs(root_dataset_path, exist_ok=True)
+    person_folder = os.path.join(root_dataset_path, name)
+    os.makedirs(person_folder, exist_ok=True)
+
+    saved_files = []
+    for file in files:
+        file_path = os.path.join(person_folder, f"{int(time())}_{file.filename}")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        saved_files.append(file_path)
+
+    # Optionally, update known_encodings immediately (or later by reloading encodings)
+    # load_known_faces()  # uncomment if you want instant recognition
+
+    return {"status": "success",
+            "message": f"{len(saved_files)} files uploaded for {name}.",
+            "files": saved_files}
 
 # ====== Run Server ======
 if __name__ == "__main__":
