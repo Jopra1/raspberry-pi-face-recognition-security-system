@@ -32,7 +32,7 @@ function HomePage() {
           <div className="bg-gray-900 flex-1 h-[600px] flex items-center justify-center rounded-md overflow-hidden">
             {isRunning ? (
               <img
-                src="http://localhost:8000/video_feed"
+  src="http://192.168.1.25:8000/video_feed"
                 alt="Live Camera Feed"
                 className="w-full h-full object-cover"
               />
